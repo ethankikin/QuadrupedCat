@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "QuadrupedCat"
 include(":app")
+include(":servotool")
