@@ -4,16 +4,16 @@
 // servos to the positions it is given.
 //
 // Serial protocol (115200 baud, ASCII, newline-terminated), phone -> Arduino:
-//   A,<a0>,...,<a7>   target angles in degrees (8 values)
+//   A,<a0>,...,<a7>   target joint angles in degrees (8 values); 0 = the joint's start position,
+//                     up to its travel (hips 135, knees 270), mirrored per joint (see START_DEG)
 //   U,<u0>,...,<u7>   target pulse widths in microseconds (8 values)
 //   P                 ping; replies "OK"
-// Order for both: hip, knee for each of FL, FR, RL, RR (index = leg * 2 + joint).
+// Order for both: FL hip, FL knee, FR hip, FR knee, RL hip, RL knee, RR hip, RR knee (pins 2-9).
 // Servos are attached on the first valid A or U line (jumping straight to that position), so
 // nothing moves at power-up. After that each servo is slew-rate limited. If nothing arrives
 // the servos simply hold their last target.
 //
-// The servos are 270 degree DS3240s limited to a centred 180 degree window (see LIMIT_MIN_US /
-// LIMIT_MAX_US below); angles 0..180 and pulses are both confined to it.
+// The servos are 270 degree DS3240s; each joint is confined to its own travel (see START_DEG / END_DEG).
 //
 // Debug output, Arduino -> phone:
 //   STAT att=<0|1> mode=<A|U|-> ok=<valid lines> bad=<rejected lines> us=<8 target pulses>   once a second
@@ -31,19 +31,17 @@ const uint8_t SERVO_PINS[NUM_SERVOS] = {2, 3, 4, 5, 6, 7, 8, 9};
 const int PULSE_MIN_US = 500;
 const int PULSE_MAX_US = 2500;
 
-// The servos are the 270 degree version, but only a 180 degree window centred in that
-// travel is used: angle 0..180 maps to LIMIT_MIN_US..LIMIT_MAX_US (about 833..2167 us),
-// so 90 degrees is the middle of travel (1500 us). U lines are clamped to the same window.
-const float SERVO_RANGE_DEG = 270.0f;    // full travel across PULSE_MIN_US..PULSE_MAX_US
-const float USABLE_RANGE_DEG = 180.0f;   // travel actually allowed
-const float LIMIT_MIN_US = PULSE_MIN_US +
-    (SERVO_RANGE_DEG - USABLE_RANGE_DEG) / 2.0f / SERVO_RANGE_DEG * (PULSE_MAX_US - PULSE_MIN_US);
-const float LIMIT_MAX_US = PULSE_MAX_US -
-    (SERVO_RANGE_DEG - USABLE_RANGE_DEG) / 2.0f / SERVO_RANGE_DEG * (PULSE_MAX_US - PULSE_MIN_US);
+// The servos are the 270 degree version: PULSE_MIN_US..PULSE_MAX_US spans SERVO_RANGE_DEG.
+const float SERVO_RANGE_DEG = 270.0f;
 
-// Safety limits for A lines, degrees. Tighten these to what the mechanics allow.
-const int MIN_ANGLE[NUM_SERVOS] = {10, 10, 10, 10, 10, 10, 10, 10};
-const int MAX_ANGLE[NUM_SERVOS] = {170, 170, 170, 170, 170, 170, 170, 170};
+// Per-joint travel, in servo degrees on the 270 degree scale. Logical angle 0 is the start
+// position and the joint's maximum is the end position, so mirrored joints run in opposite
+// servo directions for the same logical angle. Hips travel 135 degrees, knees 270, which keeps
+// the legs from hitting the body. A lines are clamped to 0..|END - START|, U lines to the
+// pulse widths of the same two end positions.
+//                                    FL hip  FL knee  FR hip  FR knee  RL hip  RL knee  RR hip  RR knee
+const float START_DEG[NUM_SERVOS] = {  270,     0,       0,     270,     135,      0,     135,    270 };
+const float END_DEG[NUM_SERVOS]   = {  135,   270,     135,       0,       0,    270,     270,      0 };
 
 const float MAX_DEG_PER_S = 360.0f;   // slew limit
 const unsigned long UPDATE_MS = 10;
@@ -69,8 +67,28 @@ static float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
-static float angleToUs(float deg) {
-  return LIMIT_MIN_US + deg / USABLE_RANGE_DEG * (LIMIT_MAX_US - LIMIT_MIN_US);
+// Servo position in degrees on the 270 degree scale -> pulse width.
+static float servoDegToUs(float deg) {
+  return PULSE_MIN_US + deg / SERVO_RANGE_DEG * (PULSE_MAX_US - PULSE_MIN_US);
+}
+
+// Travel of joint i in logical degrees.
+static float spanDeg(uint8_t i) {
+  return fabsf(END_DEG[i] - START_DEG[i]);
+}
+
+// Logical angle (0 = start position) of joint i -> pulse width, with the joint's mirroring.
+static float angleToUs(uint8_t i, float logicalDeg) {
+  float sign = END_DEG[i] >= START_DEG[i] ? 1.0f : -1.0f;
+  return servoDegToUs(START_DEG[i] + sign * logicalDeg);
+}
+
+static float minUs(uint8_t i) {
+  return min(servoDegToUs(START_DEG[i]), servoDegToUs(END_DEG[i]));
+}
+
+static float maxUs(uint8_t i) {
+  return max(servoDegToUs(START_DEG[i]), servoDegToUs(END_DEG[i]));
 }
 
 // Parses exactly NUM_SERVOS comma-separated numbers; returns false if the line is malformed.
@@ -101,9 +119,9 @@ bool handleTargets(const char *p, bool isPulse) {
   if (!parseValues(p, vals)) return false;
   for (uint8_t i = 0; i < NUM_SERVOS; i++) {
     if (isPulse) {
-      targetUs[i] = clampf(vals[i], LIMIT_MIN_US, LIMIT_MAX_US);
+      targetUs[i] = clampf(vals[i], minUs(i), maxUs(i));
     } else {
-      targetUs[i] = angleToUs(clampf(vals[i], MIN_ANGLE[i], MAX_ANGLE[i]));
+      targetUs[i] = angleToUs(i, clampf(vals[i], 0.0f, spanDeg(i)));
     }
   }
   lastMode = isPulse ? 'U' : 'A';

@@ -8,8 +8,8 @@ package com.quadruped.cat
  */
 object RobotConfig {
     // --- Leg geometry ---
-    const val L1 = 80f            // hip joint to knee joint
-    const val L2 = 80f            // knee joint to foot
+    const val L1 = 90f            // hip joint to knee joint (measured: 9 cm)
+    const val L2 = 80f            // knee joint to foot (measured: 8 cm)
     const val STAND_Z = 120f      // hip-to-foot vertical distance when standing (< L1 + L2)
 
     // --- Body geometry (hip positions relative to body centre; x forward, y left) ---
